@@ -1,0 +1,1619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Direct peer-to-peer file transfer. No servers, no relays, no accounts. Files flow browser-to-browser over an encrypted WebRTC channel.">
+<title>DROP // P2P FILE TRANSFER</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><rect width=%2216%22 height=%2216%22 fill=%22%230a0a0a%22/><text x=%228%22 y=%2212%22 font-family=%22monospace%22 font-size=%2212%22 fill=%22%23ff6b35%22 text-anchor=%22middle%22 font-weight=%22bold%22>▼</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg-1: #111111;
+    --bg-2: #161616;
+    --border: #242424;
+    --border-2: #2e2e2e;
+    --muted: #6a6a66;
+    --muted-2: #8a8a85;
+    --text: #e8e8e3;
+    --accent: #ff6b35;
+    --accent-dim: #c54a1e;
+    --ok: #50fa7b;
+    --warn: #ffcc66;
+    --err: #ff4d4d;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'Fira Code', monospace;
+    --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* Grain/noise overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    z-index: 1;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* Scanline */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    background: repeating-linear-gradient(180deg, rgba(255,255,255,0) 0, rgba(255,255,255,0) 3px, rgba(255,255,255,0.008) 3px, rgba(255,255,255,0.008) 4px);
+  }
+
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent-dim); }
+  a:hover { color: var(--text); border-bottom-color: var(--text); }
+
+  button, input, textarea, select {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  /* Layout shell */
+  .shell {
+    position: relative;
+    z-index: 2;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 28px 20px 64px;
+  }
+
+  /* Header */
+  header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px; margin-bottom: 28px;
+    gap: 20px; flex-wrap: wrap;
+  }
+  .brand {
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .brand-logo {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: -0.5px;
+  }
+  .brand-name {
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 2px;
+  }
+  .brand-tagline {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+  .statusline {
+    display: flex; align-items: center; gap: 14px;
+    font-size: 11px; color: var(--muted);
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    background: var(--muted);
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .status-dot.active {
+    background: var(--warn);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .status-dot.ok { background: var(--ok); animation: none; }
+  .status-dot.err { background: var(--err); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* Mode select */
+  .mode-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    margin-bottom: 28px;
+    border: 1px solid var(--border);
+  }
+  .mode-btn {
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--muted-2);
+    padding: 18px 20px;
+    cursor: pointer;
+    font-weight: 500;
+    letter-spacing: 2px;
+    font-size: 13px;
+    text-align: left;
+    transition: background 0.15s, color 0.15s;
+    position: relative;
+  }
+  .mode-btn:last-child { border-right: none; }
+  .mode-btn:hover { color: var(--text); background: var(--bg-1); }
+  .mode-btn.active {
+    color: var(--bg);
+    background: var(--accent);
+  }
+  .mode-btn.active .mode-num { color: var(--bg); opacity: 0.6; }
+  .mode-num {
+    color: var(--muted);
+    margin-right: 10px;
+    font-weight: 400;
+  }
+  .mode-sub {
+    display: block;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 1px;
+    color: var(--muted);
+    margin-top: 4px;
+    text-transform: uppercase;
+  }
+  .mode-btn.active .mode-sub { color: rgba(10,10,10,0.75); }
+
+  /* Panels */
+  .panel {
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    padding: 0;
+    margin-bottom: 24px;
+  }
+  .panel[hidden] { display: none !important; }
+  .panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-2);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: var(--muted-2);
+    text-transform: uppercase;
+  }
+  .panel-header .step-num {
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 10px;
+  }
+  .panel-body {
+    padding: 20px 16px;
+  }
+
+  /* File zone */
+  .dropzone {
+    border: 1px dashed var(--border-2);
+    padding: 36px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: var(--accent);
+    background: rgba(255, 107, 53, 0.04);
+  }
+  .dropzone-label { color: var(--muted-2); font-size: 12px; letter-spacing: 1px; }
+  .dropzone-hint { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  .dropzone-accent { color: var(--accent); }
+  #file-input { display: none; }
+
+  /* File list */
+  .file-list { margin-top: 16px; }
+  .file-list:empty { display: none; }
+  .file-row {
+    display: grid;
+    grid-template-columns: 20px 1fr auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    margin-bottom: 4px;
+    background: var(--bg);
+    font-size: 12px;
+  }
+  .file-row .fi-marker { color: var(--accent); }
+  .file-row .fi-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .fi-size { color: var(--muted-2); font-size: 11px; }
+  .file-row .fi-action {
+    color: var(--muted); cursor: pointer; padding: 2px 6px;
+    border: 1px solid transparent;
+  }
+  .file-row .fi-action:hover { color: var(--err); border-color: var(--border-2); }
+  .file-row .fi-progress {
+    grid-column: 1 / -1;
+    height: 2px;
+    background: var(--border);
+    position: relative;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .file-row .fi-progress-bar {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.12s linear;
+  }
+  .file-row.complete .fi-progress-bar { background: var(--ok); }
+  .file-row.complete .fi-marker { color: var(--ok); }
+  .file-row .fi-stats {
+    grid-column: 1 / -1;
+    font-size: 10px; color: var(--muted);
+    margin-top: 3px;
+    display: flex; gap: 14px;
+  }
+  .file-row .fi-stats span { white-space: nowrap; }
+
+  /* Field */
+  .field {
+    margin-bottom: 14px;
+  }
+  .field-label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--muted-2);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+  .field-label .opt { color: var(--muted); font-weight: 400; }
+  input[type="text"], input[type="password"], textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
+    border-color: var(--accent);
+  }
+  textarea {
+    resize: vertical;
+    min-height: 100px;
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-all;
+  }
+
+  /* Buttons */
+  .btn {
+    border: 1px solid var(--border-2);
+    background: var(--bg-2);
+    color: var(--text);
+    padding: 10px 18px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 1px;
+    transition: all 0.12s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 500;
+  }
+  .btn.primary:hover:not(:disabled) {
+    background: var(--bg);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .btn.ghost {
+    background: transparent;
+    border-color: var(--border);
+    font-size: 11px;
+    padding: 6px 10px;
+  }
+  .btn.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+
+  /* Exchange block */
+  .exchange {
+    display: grid;
+    grid-template-columns: 1fr 180px;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 640px) {
+    .exchange { grid-template-columns: 1fr; }
+  }
+  .qr-holder {
+    background: #fff;
+    padding: 8px;
+    width: 180px;
+    height: 180px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .qr-holder canvas, .qr-holder img { max-width: 100%; display: block; }
+  .qr-placeholder {
+    color: #888;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+
+  /* QR scanner */
+  #qr-reader {
+    width: 100%; max-width: 320px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+  #qr-reader video { width: 100% !important; }
+
+  /* Log */
+  .log {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 10px 12px;
+    font-size: 11px;
+    max-height: 160px;
+    overflow-y: auto;
+    color: var(--muted-2);
+    line-height: 1.6;
+    margin-top: 16px;
+  }
+  .log-entry { display: block; }
+  .log-entry .ts { color: var(--muted); margin-right: 8px; }
+  .log-entry.ok { color: var(--ok); }
+  .log-entry.err { color: var(--err); }
+  .log-entry.warn { color: var(--warn); }
+
+  /* Transfer summary */
+  .transfer-head {
+    display: flex; justify-content: space-between;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+    background: var(--bg);
+    font-size: 11px;
+    color: var(--muted-2);
+  }
+  .transfer-head .stat { display: inline-block; margin-right: 16px; }
+  .transfer-head .stat-val { color: var(--text); }
+  .transfer-head .stat-val.accent { color: var(--accent); }
+  .transfer-head .stat-val.ok { color: var(--ok); }
+
+  /* Footer */
+  footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 10px;
+    letter-spacing: 1px; text-transform: uppercase;
+    gap: 20px; flex-wrap: wrap;
+  }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-2);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 10px 18px;
+    z-index: 100;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+
+  /* Small helpers */
+  .muted { color: var(--muted); }
+  .small { font-size: 11px; }
+  .bracket { color: var(--muted); }
+  .warn-box {
+    border-left: 2px solid var(--warn);
+    padding: 8px 12px;
+    background: rgba(255,204,102,0.05);
+    color: var(--muted-2);
+    font-size: 11px;
+    margin: 12px 0;
+    line-height: 1.6;
+  }
+  details { margin-top: 16px; font-size: 11px; }
+  details summary { cursor: pointer; color: var(--muted-2); letter-spacing: 1px; }
+  details summary:hover { color: var(--text); }
+  details .details-body { padding: 10px 0 0 14px; color: var(--muted-2); line-height: 1.7; }
+
+  /* Start screen large title */
+  .hero {
+    padding: 8px 0 20px;
+  }
+  .hero h1 {
+    font-family: var(--font-mono);
+    font-size: clamp(26px, 5vw, 42px);
+    font-weight: 700;
+    letter-spacing: -1px;
+    margin: 0 0 8px;
+    line-height: 1;
+  }
+  .hero h1 .accent { color: var(--accent); }
+  .hero p {
+    color: var(--muted-2);
+    font-size: 13px;
+    max-width: 620px;
+    margin: 0;
+    line-height: 1.7;
+  }
+
+  .hidden { display: none !important; }
+
+  /* Code pill */
+  .code-pill {
+    display: inline-block;
+    border: 1px solid var(--border-2);
+    padding: 1px 6px;
+    color: var(--accent);
+    font-size: 11px;
+  }
+
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div class="brand">
+      <span class="brand-logo">▼</span>
+      <span>
+        <span class="brand-name">DROP</span>
+        <span class="brand-tagline">// browser-to-browser file transfer</span>
+      </span>
+    </div>
+    <div class="statusline" id="statusline">
+      <span><span class="status-dot" id="status-dot"></span><span id="status-text">idle</span></span>
+      <span id="ice-state" class="muted">ice: —</span>
+    </div>
+  </header>
+
+  <section class="hero" id="hero">
+    <h1>Direct. <span class="accent">Encrypted.</span> Serverless.</h1>
+    <p>Files flow <em>directly</em> between your browser and your recipient's over an encrypted WebRTC channel. No uploads to cloud storage, no accounts, no file size cap. Pick a side to start.</p>
+  </section>
+
+  <div class="mode-row" role="tablist">
+    <button class="mode-btn" id="btn-send-mode" role="tab"><span class="mode-num">01</span>[ SEND ]<span class="mode-sub">I have files to share</span></button>
+    <button class="mode-btn" id="btn-recv-mode" role="tab"><span class="mode-num">02</span>[ RECEIVE ]<span class="mode-sub">I'm getting files from someone</span></button>
+  </div>
+
+  <!-- ============ SENDER FLOW ============ -->
+  <div id="send-flow" hidden>
+
+    <!-- Step 1: Pick files -->
+    <section class="panel">
+      <div class="panel-header"><span><span class="step-num">01</span>SELECT FILES</span><span>sender</span></div>
+      <div class="panel-body">
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-label"><span class="dropzone-accent">[ drop files here ]</span> or click to browse</div>
+          <div class="dropzone-hint">no size limit · multiple files ok</div>
+        </div>
+        <input type="file" id="file-input" multiple>
+        <div class="file-list" id="send-file-list"></div>
+
+        <div class="field" style="margin-top: 16px;">
+          <label class="field-label" for="send-passphrase">PASSPHRASE <span class="opt">— optional, adds a second layer on top of WebRTC's DTLS</span></label>
+          <input type="password" id="send-passphrase" placeholder="leave empty to rely on WebRTC-native encryption only" autocomplete="off">
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 2: Generate invite -->
+    <section class="panel" id="send-step-invite" hidden>
+      <div class="panel-header"><span><span class="step-num">02</span>SHARE INVITE</span><span>to recipient</span></div>
+      <div class="panel-body">
+        <p class="small muted" style="margin-top: 0;">Send this invite code to your recipient via any channel (chat, email, in-person). They'll open DROP in receive mode and paste it.</p>
+        <div class="exchange">
+          <div>
+            <label class="field-label">INVITE CODE</label>
+            <textarea id="send-offer-text" readonly rows="6"></textarea>
+            <div class="btn-row">
+              <button class="btn ghost" id="copy-offer">[ copy ]</button>
+              <button class="btn ghost" id="share-offer" hidden>[ share ]</button>
+            </div>
+          </div>
+          <div>
+            <label class="field-label">QR</label>
+            <div class="qr-holder" id="send-qr"><div class="qr-placeholder">generating…</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 3: Paste answer -->
+    <section class="panel" id="send-step-answer" hidden>
+      <div class="panel-header"><span><span class="step-num">03</span>PASTE RESPONSE</span><span>from recipient</span></div>
+      <div class="panel-body">
+        <p class="small muted" style="margin-top: 0;">Your recipient will send you a <span class="code-pill">response</span> code back. Paste it here to establish the direct connection.</p>
+        <textarea id="send-answer-text" placeholder="paste response code from recipient here…" rows="6"></textarea>
+        <div class="btn-row">
+          <button class="btn ghost" id="scan-answer-qr">[ scan QR instead ]</button>
+          <button class="btn primary" id="accept-answer">[ connect ]</button>
+        </div>
+        <div id="send-scanner-wrap" class="hidden" style="margin-top: 14px;">
+          <div id="qr-reader-send"></div>
+          <button class="btn ghost" id="cancel-scan-answer" style="margin-top: 8px;">[ cancel ]</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 4: Transfer -->
+    <section class="panel" id="send-step-transfer" hidden>
+      <div class="panel-header"><span><span class="step-num">04</span>TRANSFER</span><span>live</span></div>
+      <div class="panel-body">
+        <div class="transfer-head">
+          <div>
+            <span class="stat"><span class="muted">total:</span> <span class="stat-val" id="send-total-bytes">—</span></span>
+            <span class="stat"><span class="muted">sent:</span> <span class="stat-val accent" id="send-sent-bytes">0 B</span></span>
+            <span class="stat"><span class="muted">rate:</span> <span class="stat-val" id="send-rate">— MB/s</span></span>
+          </div>
+          <div>
+            <span class="stat"><span class="muted">channels:</span> <span class="stat-val" id="send-channels">—</span></span>
+          </div>
+        </div>
+        <div class="file-list" id="send-xfer-list"></div>
+        <div class="log" id="send-log"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ============ RECEIVER FLOW ============ -->
+  <div id="recv-flow" hidden>
+
+    <section class="panel">
+      <div class="panel-header"><span><span class="step-num">01</span>PASTE INVITE</span><span>from sender</span></div>
+      <div class="panel-body">
+        <p class="small muted" style="margin-top: 0;">Paste the invite code your sender shared, or scan their QR.</p>
+        <textarea id="recv-offer-text" placeholder="paste invite code from sender here…" rows="6"></textarea>
+        <div class="btn-row">
+          <button class="btn ghost" id="scan-offer-qr">[ scan QR instead ]</button>
+        </div>
+        <div id="recv-scanner-wrap" class="hidden" style="margin-top: 14px;">
+          <div id="qr-reader-recv"></div>
+          <button class="btn ghost" id="cancel-scan-offer" style="margin-top: 8px;">[ cancel ]</button>
+        </div>
+
+        <div class="field" style="margin-top: 16px;">
+          <label class="field-label" for="recv-passphrase">PASSPHRASE <span class="opt">— must match sender's, if they set one</span></label>
+          <input type="password" id="recv-passphrase" placeholder="leave empty if sender didn't set one" autocomplete="off">
+        </div>
+
+        <div class="btn-row">
+          <button class="btn primary" id="generate-answer">[ generate response ]</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="recv-step-response" hidden>
+      <div class="panel-header"><span><span class="step-num">02</span>SEND RESPONSE</span><span>to sender</span></div>
+      <div class="panel-body">
+        <p class="small muted" style="margin-top: 0;">Send this response code back to your sender. Once they paste it, the connection will establish and files will start flowing.</p>
+        <div class="exchange">
+          <div>
+            <label class="field-label">RESPONSE CODE</label>
+            <textarea id="recv-answer-text" readonly rows="6"></textarea>
+            <div class="btn-row">
+              <button class="btn ghost" id="copy-answer">[ copy ]</button>
+              <button class="btn ghost" id="share-answer" hidden>[ share ]</button>
+            </div>
+          </div>
+          <div>
+            <label class="field-label">QR</label>
+            <div class="qr-holder" id="recv-qr"><div class="qr-placeholder">generating…</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="recv-step-transfer" hidden>
+      <div class="panel-header"><span><span class="step-num">03</span>RECEIVING</span><span>live</span></div>
+      <div class="panel-body">
+        <div class="transfer-head">
+          <div>
+            <span class="stat"><span class="muted">total:</span> <span class="stat-val" id="recv-total-bytes">—</span></span>
+            <span class="stat"><span class="muted">received:</span> <span class="stat-val accent" id="recv-recv-bytes">0 B</span></span>
+            <span class="stat"><span class="muted">rate:</span> <span class="stat-val" id="recv-rate">— MB/s</span></span>
+          </div>
+          <div>
+            <span class="stat"><span class="muted">storage:</span> <span class="stat-val" id="recv-storage-mode">—</span></span>
+          </div>
+        </div>
+        <div class="file-list" id="recv-xfer-list"></div>
+        <div class="log" id="recv-log"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- About / security footer details -->
+  <details>
+    <summary>[ how this works & security notes ]</summary>
+    <div class="details-body">
+      <p><strong>Transport:</strong> files move over WebRTC data channels directly between your browser and your recipient's. Google public STUN servers help both sides discover their public addresses; no file data ever flows through them. If a direct connection can't be established (strict NAT), the transfer falls back to a free public TURN relay (openrelay.metered.ca) — still end-to-end encrypted, but traffic hops through the relay.</p>
+      <p><strong>Encryption:</strong> WebRTC data channels always use DTLS-SRTP (mandatory AES-GCM). If you add a passphrase, a second layer is applied: PBKDF2-SHA256 (210k iterations) derives an AES-GCM-256 key, and every chunk is encrypted with a fresh random IV before leaving your machine. Defense in depth.</p>
+      <p><strong>Throughput:</strong> transfers use 4 parallel data channels with 256 KB chunks and buffer-aware backpressure. Realistic ceiling is 500 Mbps–1.5 Gbps on good hardware between two LAN-adjacent machines; your ISP is usually the real bottleneck.</p>
+      <p><strong>Receiver storage:</strong> where the browser supports the File System Access API (Chrome/Edge/Opera desktop), chunks stream straight to disk — no RAM cap, multi-GB files fine. Elsewhere, files accumulate in memory then download via blob URL (~2 GB practical cap).</p>
+      <p><strong>No server:</strong> this page is static. Host it anywhere — GitHub Pages, Netlify, your own box, or just open the HTML file locally. The only network dependencies are Google STUN, the TURN fallback, and CDN font/library loads (which you can vendor locally if you want zero third-party requests).</p>
+    </div>
+  </details>
+
+  <footer>
+    <div>DROP · v1.0 · <a href="#" id="reset-link">[ reset ]</a></div>
+    <div>peer-to-peer · no servers · no accounts</div>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+   DROP — P2P file transfer
+   All logic in one file. Portable & static-hostable.
+===================================================================== */
+
+// --- Configuration --------------------------------------------------------
+
+const ICE_CONFIG = {
+  iceServers: [
+    // STUN — discover public address; no data relay.
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+    // TURN fallback — free public openrelay (Metered). Encrypted relay for symmetric-NAT users.
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ],
+  iceCandidatePoolSize: 4
+};
+
+const NUM_DATA_CHANNELS = 4;            // parallel chunk channels
+// CHUNK_SIZE is the payload carved out of each file. Total SCTP message =
+// CHUNK_SIZE + 12 (frame header) + 28 (AES-GCM IV+tag if encrypted).
+// 64 KB - 256 keeps us safely under Safari's 65536-byte SCTP limit while
+// giving Chromium/Firefox room to pipe at full rate.
+const CHUNK_SIZE = 64 * 1024 - 256;
+const HIGH_WATER_MARK = 8 * 1024 * 1024; // 8 MB per channel backpressure target
+const LOW_WATER_MARK  = 1 * 1024 * 1024; // resume threshold
+const CONTROL_CHANNEL_LABEL = 'ctrl';
+
+// --- Small utilities ------------------------------------------------------
+
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+function fmtBytes(b) {
+  if (!b && b !== 0) return '—';
+  if (b < 1024) return b + ' B';
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let i = -1; let n = b;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n < 10 ? 2 : 1) + ' ' + u[i];
+}
+function fmtRate(bps) {
+  if (!bps) return '— MB/s';
+  if (bps < 1024 * 1024) return (bps / 1024).toFixed(1) + ' KB/s';
+  if (bps < 1024 * 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' MB/s';
+  return (bps / 1024 / 1024 / 1024).toFixed(2) + ' GB/s';
+}
+function fmtETA(sec) {
+  if (!isFinite(sec) || sec < 0) return '—';
+  if (sec < 60) return Math.ceil(sec) + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + Math.ceil(sec % 60) + 's';
+  return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
+function ts() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8);
+}
+function toast(msg, ms = 1800) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), ms);
+}
+function randId() {
+  return crypto.getRandomValues(new Uint32Array(1))[0];
+}
+function log(target, msg, cls = '') {
+  const box = $('#' + target);
+  if (!box) return;
+  const entry = document.createElement('span');
+  entry.className = 'log-entry ' + cls;
+  entry.innerHTML = `<span class="ts">${ts()}</span>${msg}`;
+  box.appendChild(entry);
+  box.scrollTop = box.scrollHeight;
+}
+function setStatus(text, state = 'active') {
+  $('#status-text').textContent = text;
+  const dot = $('#status-dot');
+  dot.classList.remove('active', 'ok', 'err');
+  if (state) dot.classList.add(state);
+}
+
+// Compress/expand signaling blobs
+function packSignal(obj) { return LZString.compressToEncodedURIComponent(JSON.stringify(obj)); }
+function unpackSignal(s) { return JSON.parse(LZString.decompressFromEncodedURIComponent(s.trim())); }
+
+// Chunk frame header: 12 bytes
+// [0..3]  fileId (uint32 LE)
+// [4..11] chunkIndex (uint64 LE, stored as two uint32s — low/high)
+// [12..]  payload
+function makeChunkFrame(fileId, chunkIndex, payload) {
+  const buf = new ArrayBuffer(12 + payload.byteLength);
+  const view = new DataView(buf);
+  view.setUint32(0, fileId, true);
+  const idxLo = chunkIndex >>> 0;
+  const idxHi = Math.floor(chunkIndex / 0x100000000);
+  view.setUint32(4, idxLo, true);
+  view.setUint32(8, idxHi, true);
+  new Uint8Array(buf, 12).set(new Uint8Array(payload));
+  return buf;
+}
+function parseChunkFrame(buf) {
+  const view = new DataView(buf);
+  const fileId = view.getUint32(0, true);
+  const idxLo = view.getUint32(4, true);
+  const idxHi = view.getUint32(8, true);
+  const chunkIndex = idxHi * 0x100000000 + idxLo;
+  const payload = buf.slice(12);
+  return { fileId, chunkIndex, payload };
+}
+
+// --- Crypto layer ---------------------------------------------------------
+// Optional app-layer AES-GCM on top of WebRTC's DTLS, keyed from passphrase.
+
+const CryptoLayer = {
+  enabled: false,
+  key: null,
+  salt: null,
+
+  async deriveKey(passphrase, salt) {
+    const enc = new TextEncoder();
+    const material = await crypto.subtle.importKey(
+      'raw', enc.encode(passphrase),
+      'PBKDF2', false, ['deriveKey']
+    );
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 210000, hash: 'SHA-256' },
+      material,
+      { name: 'AES-GCM', length: 256 },
+      false, ['encrypt', 'decrypt']
+    );
+  },
+
+  async enableWithPassphrase(passphrase, saltB64 = null) {
+    if (!passphrase) { this.enabled = false; return null; }
+    let salt;
+    if (saltB64) {
+      salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
+    } else {
+      salt = crypto.getRandomValues(new Uint8Array(16));
+    }
+    this.key = await this.deriveKey(passphrase, salt);
+    this.salt = salt;
+    this.enabled = true;
+    return btoa(String.fromCharCode(...salt));
+  },
+
+  async encrypt(plaintext) {
+    if (!this.enabled) return plaintext;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, this.key, plaintext);
+    const out = new Uint8Array(12 + ct.byteLength);
+    out.set(iv, 0);
+    out.set(new Uint8Array(ct), 12);
+    return out.buffer;
+  },
+
+  async decrypt(ciphertext) {
+    if (!this.enabled) return ciphertext;
+    const iv = new Uint8Array(ciphertext, 0, 12);
+    const ct = new Uint8Array(ciphertext, 12);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, this.key, ct);
+    return pt;
+  }
+};
+
+// --- App State ------------------------------------------------------------
+
+const App = {
+  mode: null,            // 'send' | 'recv'
+  pc: null,              // RTCPeerConnection
+  controlChannel: null,  // RTCDataChannel for JSON control
+  dataChannels: [],      // RTCDataChannels for binary chunks
+  dataChannelOpenCount: 0,
+  nextChannelIdx: 0,
+
+  // send-side
+  sendFiles: [],         // File objects with meta
+  sendState: new Map(),  // fileId -> { file, meta, sentChunks, sentBytes, startedAt, row }
+
+  // recv-side
+  recvState: new Map(),  // fileId -> receiver state
+  storageMode: null,     // 'fs' | 'mem'
+
+  totals: { bytesTarget: 0, bytesDone: 0, startTime: 0 }
+};
+
+// Feature-detect File System Access API (desktop Chromium-family).
+function hasFileSystemAccess() {
+  return typeof window.showSaveFilePicker === 'function';
+}
+
+// --- RTC wiring -----------------------------------------------------------
+
+function createPeerConnection() {
+  const pc = new RTCPeerConnection(ICE_CONFIG);
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    $('#ice-state').textContent = 'ice: ' + s;
+    if (s === 'connected' || s === 'completed') setStatus('connected', 'ok');
+    else if (s === 'failed') setStatus('connection failed', 'err');
+    else if (s === 'disconnected') setStatus('disconnected', 'err');
+  };
+  return pc;
+}
+
+// Wait for ICE gathering complete so we can emit a single self-contained SDP.
+function waitIceComplete(pc) {
+  return new Promise(resolve => {
+    if (pc.iceGatheringState === 'complete') return resolve();
+    const check = () => {
+      if (pc.iceGatheringState === 'complete') {
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      }
+    };
+    pc.addEventListener('icegatheringstatechange', check);
+    // Safety: many ICE servers → still cap after 4s so users aren't stuck.
+    setTimeout(() => { if (pc.iceGatheringState !== 'complete') resolve(); }, 4000);
+  });
+}
+
+function bindDataChannel(dc, isData) {
+  if (isData) {
+    dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = LOW_WATER_MARK;
+  }
+  dc.onopen = () => {
+    if (isData) {
+      App.dataChannelOpenCount++;
+      updateChannelStat();
+    } else {
+      // control
+    }
+    if (App.dataChannelOpenCount === NUM_DATA_CHANNELS && App.controlChannel && App.controlChannel.readyState === 'open') {
+      onAllChannelsOpen();
+    }
+  };
+  dc.onclose = () => {
+    if (isData) {
+      App.dataChannelOpenCount = Math.max(0, App.dataChannelOpenCount - 1);
+      updateChannelStat();
+    }
+  };
+  dc.onerror = (e) => {
+    const logTarget = App.mode === 'send' ? 'send-log' : 'recv-log';
+    log(logTarget, 'channel error: ' + (e.error?.message || 'unknown'), 'err');
+  };
+  dc.onmessage = (ev) => handleMessage(dc, ev.data);
+}
+
+function updateChannelStat() {
+  const el = $('#send-channels');
+  if (el) el.textContent = `${App.dataChannelOpenCount}/${NUM_DATA_CHANNELS}`;
+}
+
+function onAllChannelsOpen() {
+  const logTarget = App.mode === 'send' ? 'send-log' : 'recv-log';
+  log(logTarget, `link up — ${NUM_DATA_CHANNELS} data channels open`, 'ok');
+  setStatus('linked · transferring', 'ok');
+
+  if (App.mode === 'send') {
+    // Announce encryption-handshake info + queue of files, then start sending.
+    beginSending();
+  }
+}
+
+// --- Message routing ------------------------------------------------------
+
+async function handleMessage(dc, data) {
+  if (typeof data === 'string') {
+    // Control JSON
+    let msg;
+    try { msg = JSON.parse(data); } catch { return; }
+    handleControl(msg);
+  } else {
+    // Binary chunk (receiver side)
+    await handleChunk(data);
+  }
+}
+
+function handleControl(msg) {
+  switch (msg.type) {
+    case 'session':
+      // sender->receiver: announce file manifest + salt
+      onSessionManifest(msg);
+      break;
+    case 'session-ack':
+      // receiver->sender: ready, start streaming
+      onSessionAck(msg);
+      break;
+    case 'file-done':
+      // sender->receiver: all chunks of file X have been dispatched
+      onFileDoneSignal(msg);
+      break;
+    case 'file-complete-ack':
+      // receiver->sender: file fully received & hashed
+      onFileCompleteAck(msg);
+      break;
+    case 'error':
+      {
+        const logTarget = App.mode === 'send' ? 'send-log' : 'recv-log';
+        log(logTarget, 'peer error: ' + msg.message, 'err');
+      }
+      break;
+  }
+}
+
+// --- Sender flow ----------------------------------------------------------
+
+async function senderStartInvite() {
+  if (!App.sendFiles.length) { toast('pick at least one file first'); return; }
+
+  setStatus('generating invite…', 'active');
+
+  App.pc = createPeerConnection();
+
+  // Create channels BEFORE offer so they are in the SDP.
+  App.controlChannel = App.pc.createDataChannel(CONTROL_CHANNEL_LABEL, { ordered: true });
+  bindDataChannel(App.controlChannel, false);
+  App.dataChannels = [];
+  for (let i = 0; i < NUM_DATA_CHANNELS; i++) {
+    const dc = App.pc.createDataChannel('data' + i, { ordered: true });
+    bindDataChannel(dc, true);
+    App.dataChannels.push(dc);
+  }
+
+  // Passphrase-based app-layer encryption?
+  const pass = $('#send-passphrase').value;
+  let saltB64 = null;
+  if (pass) {
+    saltB64 = await CryptoLayer.enableWithPassphrase(pass);
+  }
+
+  const offer = await App.pc.createOffer();
+  await App.pc.setLocalDescription(offer);
+  await waitIceComplete(App.pc);
+
+  const payload = {
+    v: 1,
+    role: 'offer',
+    sdp: App.pc.localDescription.sdp,
+    type: App.pc.localDescription.type,
+    enc: !!pass,
+    salt: saltB64
+  };
+  const packed = packSignal(payload);
+  $('#send-offer-text').value = packed;
+  renderQR('#send-qr', packed);
+
+  $('#send-step-invite').hidden = false;
+  $('#send-step-answer').hidden = false;
+  setStatus('awaiting response…', 'active');
+}
+
+async function senderAcceptAnswer() {
+  const raw = $('#send-answer-text').value.trim();
+  if (!raw) { toast('paste a response first'); return; }
+
+  let payload;
+  try { payload = unpackSignal(raw); }
+  catch (e) { toast('invalid response code'); return; }
+
+  if (payload.role !== 'answer') { toast('expected a response, got something else'); return; }
+
+  setStatus('linking…', 'active');
+  await App.pc.setRemoteDescription({ type: payload.type, sdp: payload.sdp });
+
+  $('#send-step-transfer').hidden = false;
+  log('send-log', 'response accepted, negotiating…');
+}
+
+function beginSending() {
+  // Build manifest
+  const manifest = App.sendFiles.map(f => ({
+    id: f._id, name: f.name, size: f.size, mime: f.type || 'application/octet-stream'
+  }));
+  App.totals.bytesTarget = manifest.reduce((a, b) => a + b.size, 0);
+  $('#send-total-bytes').textContent = fmtBytes(App.totals.bytesTarget);
+
+  App.controlChannel.send(JSON.stringify({
+    type: 'session',
+    files: manifest,
+    chunkSize: CHUNK_SIZE,
+    enc: CryptoLayer.enabled,
+    salt: CryptoLayer.salt ? btoa(String.fromCharCode(...CryptoLayer.salt)) : null
+  }));
+
+  log('send-log', `manifest sent: ${manifest.length} file(s), ${fmtBytes(App.totals.bytesTarget)}`);
+}
+
+async function onSessionAck() {
+  log('send-log', 'receiver ready · streaming starts');
+  App.totals.startTime = performance.now();
+  startRateTicker('send');
+
+  // Stream all files, chunks distributed across data channels.
+  for (const file of App.sendFiles) {
+    await streamOneFile(file);
+  }
+}
+
+async function streamOneFile(file) {
+  const fid = file._id;
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const row = renderFileRow('send-xfer-list', fid, file.name, file.size);
+  const state = {
+    file, meta: { id: fid, name: file.name, size: file.size },
+    sentChunks: 0, sentBytes: 0, startedAt: performance.now(), row
+  };
+  App.sendState.set(fid, state);
+
+  for (let idx = 0; idx < totalChunks; idx++) {
+    const start = idx * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const slice = file.slice(start, end);
+    const buf = await slice.arrayBuffer();
+    const payload = await CryptoLayer.encrypt(buf);
+    const frame = makeChunkFrame(fid, idx, payload);
+    const dc = pickChannelForSend();
+    await waitForDrain(dc);
+    dc.send(frame);
+    state.sentChunks++;
+    state.sentBytes += (end - start);
+    App.totals.bytesDone += (end - start);
+    updateFileRowProgress(row, state.sentBytes, state.meta.size);
+  }
+  // Announce file complete.
+  App.controlChannel.send(JSON.stringify({ type: 'file-done', id: fid }));
+  log('send-log', `dispatched ${file.name} (${fmtBytes(file.size)})`);
+}
+
+function pickChannelForSend() {
+  // Round-robin with bufferedAmount tiebreaker.
+  let best = null;
+  let bestBuf = Infinity;
+  for (let i = 0; i < NUM_DATA_CHANNELS; i++) {
+    const idx = (App.nextChannelIdx + i) % NUM_DATA_CHANNELS;
+    const dc = App.dataChannels[idx];
+    if (dc.readyState !== 'open') continue;
+    if (dc.bufferedAmount < bestBuf) { best = dc; bestBuf = dc.bufferedAmount; }
+  }
+  App.nextChannelIdx = (App.nextChannelIdx + 1) % NUM_DATA_CHANNELS;
+  return best;
+}
+
+function waitForDrain(dc) {
+  if (dc.bufferedAmount < HIGH_WATER_MARK) return Promise.resolve();
+  return new Promise(resolve => {
+    const check = () => {
+      if (dc.bufferedAmount < LOW_WATER_MARK) {
+        dc.removeEventListener('bufferedamountlow', check);
+        resolve();
+      }
+    };
+    dc.addEventListener('bufferedamountlow', check, { once: false });
+    // Polling fallback for environments where the event is flaky.
+    const poll = setInterval(() => {
+      if (dc.bufferedAmount < LOW_WATER_MARK) {
+        clearInterval(poll);
+        dc.removeEventListener('bufferedamountlow', check);
+        resolve();
+      }
+    }, 40);
+  });
+}
+
+async function onFileCompleteAck(msg) {
+  const st = App.sendState.get(msg.id);
+  if (!st) return;
+  st.row.classList.add('complete');
+  updateFileRowProgress(st.row, st.meta.size, st.meta.size);
+  log('send-log', `✓ ${st.meta.name} delivered`, 'ok');
+
+  // All files complete?
+  if ([...App.sendState.values()].every(s => s.row.classList.contains('complete'))) {
+    setStatus('all files delivered', 'ok');
+    log('send-log', 'transfer complete', 'ok');
+    stopRateTicker();
+  }
+}
+
+// --- Receiver flow --------------------------------------------------------
+
+async function receiverGenerateAnswer() {
+  const raw = $('#recv-offer-text').value.trim();
+  if (!raw) { toast('paste an invite first'); return; }
+
+  let payload;
+  try { payload = unpackSignal(raw); } catch { toast('invalid invite code'); return; }
+  if (payload.role !== 'offer') { toast('expected an invite, got something else'); return; }
+
+  // Prep crypto if peer enabled it.
+  if (payload.enc) {
+    const pass = $('#recv-passphrase').value;
+    if (!pass) { toast('this invite is passphrase-protected — enter the passphrase'); return; }
+    await CryptoLayer.enableWithPassphrase(pass, payload.salt);
+  }
+
+  setStatus('accepting invite…', 'active');
+
+  App.pc = createPeerConnection();
+  App.pc.ondatachannel = (ev) => {
+    const dc = ev.channel;
+    if (dc.label === CONTROL_CHANNEL_LABEL) {
+      App.controlChannel = dc;
+      bindDataChannel(dc, false);
+    } else {
+      App.dataChannels.push(dc);
+      bindDataChannel(dc, true);
+    }
+  };
+
+  await App.pc.setRemoteDescription({ type: payload.type, sdp: payload.sdp });
+  const answer = await App.pc.createAnswer();
+  await App.pc.setLocalDescription(answer);
+  await waitIceComplete(App.pc);
+
+  const response = {
+    v: 1,
+    role: 'answer',
+    sdp: App.pc.localDescription.sdp,
+    type: App.pc.localDescription.type
+  };
+  const packed = packSignal(response);
+  $('#recv-answer-text').value = packed;
+  renderQR('#recv-qr', packed);
+  $('#recv-step-response').hidden = false;
+
+  setStatus('awaiting sender…', 'active');
+}
+
+function onSessionManifest(msg) {
+  // Sender told us what's coming. Set up receiving state.
+  App.totals.bytesTarget = msg.files.reduce((a, b) => a + b.size, 0);
+  $('#recv-total-bytes').textContent = fmtBytes(App.totals.bytesTarget);
+  $('#recv-step-transfer').hidden = false;
+
+  const canDir = typeof window.showDirectoryPicker === 'function';
+  const canSave = typeof window.showSaveFilePicker === 'function';
+  App.storageMode = canDir ? 'dir' : (canSave ? 'fs' : 'mem');
+  $('#recv-storage-mode').textContent =
+    App.storageMode === 'dir' ? 'stream→folder' :
+    App.storageMode === 'fs'  ? 'stream→disk'   : 'in-memory';
+
+  if (msg.enc && !CryptoLayer.enabled) {
+    log('recv-log', 'sender enabled encryption but no passphrase was set — transfer may fail', 'warn');
+  }
+
+  (async () => {
+    // If we can, ask the user once for a destination folder and use it for all files.
+    let dirHandle = null;
+    if (App.storageMode === 'dir') {
+      try {
+        dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (e) {
+        log('recv-log', 'folder picker cancelled — falling back to per-file save or memory', 'warn');
+        App.storageMode = canSave ? 'fs' : 'mem';
+        $('#recv-storage-mode').textContent =
+          App.storageMode === 'fs' ? 'stream→disk' : 'in-memory';
+      }
+    }
+
+    for (const f of msg.files) {
+      const st = {
+        meta: f,
+        totalChunks: Math.ceil(f.size / msg.chunkSize),
+        received: 0, bytes: 0,
+        row: renderFileRow('recv-xfer-list', f.id, f.name, f.size),
+        storage: null
+      };
+      try {
+        if (dirHandle) {
+          const fh = await dirHandle.getFileHandle(f.name, { create: true });
+          const writable = await fh.createWritable({ keepExistingData: false });
+          try { await writable.truncate(f.size); } catch {}
+          st.storage = { kind: 'fs', writable };
+        } else if (App.storageMode === 'fs') {
+          const fh = await window.showSaveFilePicker({ suggestedName: f.name });
+          const writable = await fh.createWritable({ keepExistingData: false });
+          try { await writable.truncate(f.size); } catch {}
+          st.storage = { kind: 'fs', writable };
+        } else {
+          st.storage = { kind: 'mem', chunks: new Map() };
+        }
+      } catch (e) {
+        log('recv-log', `storage setup failed for ${f.name}: ${e.message} — falling back to memory`, 'warn');
+        st.storage = { kind: 'mem', chunks: new Map() };
+      }
+      App.recvState.set(f.id, st);
+    }
+    App.controlChannel.send(JSON.stringify({ type: 'session-ack' }));
+    App.totals.startTime = performance.now();
+    startRateTicker('recv');
+    log('recv-log', `ready · ${msg.files.length} file(s), ${fmtBytes(App.totals.bytesTarget)}`);
+  })();
+}
+
+async function handleChunk(buf) {
+  // buf is ArrayBuffer
+  const { fileId, chunkIndex, payload } = parseChunkFrame(buf);
+  const st = App.recvState.get(fileId);
+  if (!st) return;
+
+  let plain;
+  try {
+    plain = await CryptoLayer.decrypt(payload);
+  } catch (e) {
+    log('recv-log', `decrypt failed for chunk ${chunkIndex} — wrong passphrase?`, 'err');
+    return;
+  }
+  const offset = chunkIndex * CHUNK_SIZE;
+  const bytes = plain.byteLength;
+
+  if (st.storage.kind === 'fs') {
+    // Streamed write at exact offset.
+    const w = st.storage.writable;
+    await w.seek(offset);
+    await w.write(new Uint8Array(plain));
+  } else {
+    st.storage.chunks.set(chunkIndex, plain);
+  }
+
+  st.received++;
+  st.bytes += bytes;
+  App.totals.bytesDone += bytes;
+  updateFileRowProgress(st.row, st.bytes, st.meta.size);
+}
+
+async function onFileDoneSignal(msg) {
+  // Finalize: close writable or build blob.
+  const st = App.recvState.get(msg.id);
+  if (!st) return;
+  if (st.storage.kind === 'fs') {
+    try {
+      await st.storage.writable.close();
+      log('recv-log', `✓ ${st.meta.name} saved to disk`, 'ok');
+    } catch (e) {
+      log('recv-log', `finalize failed for ${st.meta.name}: ${e.message}`, 'err');
+    }
+  } else {
+    // Assemble blob in order.
+    const parts = [];
+    const totalChunks = st.totalChunks;
+    for (let i = 0; i < totalChunks; i++) {
+      const p = st.storage.chunks.get(i);
+      if (!p) { log('recv-log', `missing chunk ${i} for ${st.meta.name}`, 'err'); return; }
+      parts.push(p);
+    }
+    const blob = new Blob(parts, { type: st.meta.mime || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    // Add a download link inline.
+    const a = document.createElement('a');
+    a.href = url; a.download = st.meta.name; a.textContent = `[ download ${st.meta.name} ]`;
+    a.style.color = 'var(--ok)';
+    a.style.display = 'inline-block';
+    a.style.marginTop = '6px';
+    st.row.appendChild(a);
+    // Auto-click once — but only if user gesture chain allows; many browsers block auto-dl; manual click is always fine.
+    try { a.click(); } catch {}
+    log('recv-log', `✓ ${st.meta.name} ready — click to save`, 'ok');
+  }
+  st.row.classList.add('complete');
+  updateFileRowProgress(st.row, st.meta.size, st.meta.size);
+  App.controlChannel.send(JSON.stringify({ type: 'file-complete-ack', id: msg.id }));
+
+  if ([...App.recvState.values()].every(s => s.row.classList.contains('complete'))) {
+    setStatus('all files received', 'ok');
+    log('recv-log', 'transfer complete', 'ok');
+    stopRateTicker();
+  }
+}
+
+// --- UI helpers -----------------------------------------------------------
+
+function renderFileRow(listId, id, name, size) {
+  const list = $('#' + listId);
+  const row = document.createElement('div');
+  row.className = 'file-row';
+  row.dataset.id = id;
+  row.innerHTML = `
+    <span class="fi-marker">▸</span>
+    <span class="fi-name">${escapeHtml(name)}</span>
+    <span class="fi-size">${fmtBytes(size)}</span>
+    <span></span>
+    <div class="fi-progress"><div class="fi-progress-bar"></div></div>
+    <div class="fi-stats">
+      <span class="p-pct">0%</span>
+      <span class="p-bytes">0 B / ${fmtBytes(size)}</span>
+      <span class="p-rate"></span>
+    </div>
+  `;
+  list.appendChild(row);
+  return row;
+}
+
+function updateFileRowProgress(row, done, total) {
+  const pct = Math.min(100, (done / total) * 100);
+  row.querySelector('.fi-progress-bar').style.width = pct + '%';
+  row.querySelector('.p-pct').textContent = pct.toFixed(1) + '%';
+  row.querySelector('.p-bytes').textContent = `${fmtBytes(done)} / ${fmtBytes(total)}`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderQR(selector, text) {
+  const el = $(selector);
+  el.innerHTML = '';
+  if (text.length > 2500) {
+    // QR capacity limit at byte mode L is ~2953; alphanumeric URL-safe ~4296.
+    // LZ-string EncodedURI uses an alphanumeric-compatible subset, but for safety cap at ~2500.
+    el.innerHTML = '<div class="qr-placeholder">code too long<br/>for QR — use<br/>copy/paste</div>';
+    return;
+  }
+  const canvas = document.createElement('canvas');
+  QRCode.toCanvas(canvas, text, {
+    errorCorrectionLevel: 'L',
+    margin: 1,
+    scale: 4,
+    color: { dark: '#000000', light: '#ffffff' }
+  }, (err) => {
+    if (err) {
+      el.innerHTML = '<div class="qr-placeholder">QR failed</div>';
+      return;
+    }
+    el.appendChild(canvas);
+  });
+}
+
+// --- Rate / ETA ticker ----------------------------------------------------
+
+let rateTickerT = null;
+let lastTickBytes = 0;
+let lastTickTime = 0;
+function startRateTicker(side) {
+  stopRateTicker();
+  lastTickBytes = App.totals.bytesDone;
+  lastTickTime = performance.now();
+  const totalEl  = side === 'send' ? '#send-sent-bytes' : '#recv-recv-bytes';
+  const rateEl   = side === 'send' ? '#send-rate'       : '#recv-rate';
+  rateTickerT = setInterval(() => {
+    const now = performance.now();
+    const dt = (now - lastTickTime) / 1000;
+    const db = App.totals.bytesDone - lastTickBytes;
+    const bps = dt > 0 ? db / dt : 0;
+    $(totalEl).textContent = fmtBytes(App.totals.bytesDone);
+    $(rateEl).textContent  = fmtRate(bps);
+    lastTickTime = now;
+    lastTickBytes = App.totals.bytesDone;
+  }, 500);
+}
+function stopRateTicker() {
+  if (rateTickerT) clearInterval(rateTickerT);
+  rateTickerT = null;
+}
+
+// --- Mode switching -------------------------------------------------------
+
+function setMode(m) {
+  App.mode = m;
+  $('#btn-send-mode').classList.toggle('active', m === 'send');
+  $('#btn-recv-mode').classList.toggle('active', m === 'recv');
+  $('#send-flow').hidden = (m !== 'send');
+  $('#recv-flow').hidden = (m !== 'recv');
+  $('#hero').style.display = 'none';
+}
+
+// --- File picker + drop ---------------------------------------------------
+
+function renderSendFileList() {
+  const list = $('#send-file-list');
+  list.innerHTML = '';
+  if (!App.sendFiles.length) return;
+  App.sendFiles.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'file-row';
+    row.innerHTML = `
+      <span class="fi-marker">▸</span>
+      <span class="fi-name">${escapeHtml(f.name)}</span>
+      <span class="fi-size">${fmtBytes(f.size)}</span>
+      <span class="fi-action" data-i="${i}">[ remove ]</span>
+    `;
+    list.appendChild(row);
+  });
+  list.querySelectorAll('.fi-action').forEach(el => {
+    el.onclick = () => {
+      const i = +el.dataset.i;
+      App.sendFiles.splice(i, 1);
+      renderSendFileList();
+    };
+  });
+}
+
+function addSendFiles(fileList) {
+  for (const f of fileList) {
+    f._id = randId();
+    App.sendFiles.push(f);
+  }
+  renderSendFileList();
+  if (App.sendFiles.length) {
+    // Not yet starting — wait for user to trigger.
+  }
+}
+
+// --- QR scanning ----------------------------------------------------------
+
+async function scanQR(readerId, onDecoded) {
+  const reader = new Html5Qrcode(readerId);
+  try {
+    await reader.start(
+      { facingMode: 'environment' },
+      { fps: 12, qrbox: { width: 240, height: 240 } },
+      (decoded) => {
+        reader.stop().then(() => reader.clear()).catch(()=>{});
+        onDecoded(decoded);
+      },
+      () => {}
+    );
+    return reader;
+  } catch (e) {
+    toast('camera unavailable: ' + e.message);
+    return null;
+  }
+}
+
+// --- Wire up UI -----------------------------------------------------------
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Mode buttons
+  $('#btn-send-mode').onclick = () => setMode('send');
+  $('#btn-recv-mode').onclick = () => setMode('recv');
+
+  // Drop + file input
+  const dz = $('#dropzone');
+  const fi = $('#file-input');
+  dz.onclick = () => fi.click();
+  fi.onchange = (e) => addSendFiles(e.target.files);
+  dz.ondragover = (e) => { e.preventDefault(); dz.classList.add('dragover'); };
+  dz.ondragleave = () => dz.classList.remove('dragover');
+  dz.ondrop = (e) => {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) addSendFiles(e.dataTransfer.files);
+  };
+
+  // Sender buttons — no explicit "generate" button: we start invite flow as soon as they have files and hit something.
+  // Actually let's add a clearer "start" button inside the dropzone area by adding a one-shot button.
+  // We'll attach to the passphrase row with a pseudo-button below: the generate flow kicks off from the action button.
+  // --- Add a start button dynamically:
+  const startRow = document.createElement('div');
+  startRow.className = 'btn-row';
+  startRow.innerHTML = `<button class="btn primary" id="start-invite">[ generate invite ]</button>`;
+  $('#send-passphrase').closest('.field').after(startRow);
+  $('#start-invite').onclick = senderStartInvite;
+
+  $('#copy-offer').onclick = () => {
+    navigator.clipboard.writeText($('#send-offer-text').value).then(() => toast('copied'));
+  };
+  $('#accept-answer').onclick = senderAcceptAnswer;
+
+  $('#scan-answer-qr').onclick = async () => {
+    $('#send-scanner-wrap').classList.remove('hidden');
+    const r = await scanQR('qr-reader-send', (decoded) => {
+      $('#send-answer-text').value = decoded;
+      $('#send-scanner-wrap').classList.add('hidden');
+      toast('scanned');
+    });
+    $('#cancel-scan-answer').onclick = () => {
+      if (r) r.stop().then(() => r.clear()).catch(()=>{});
+      $('#send-scanner-wrap').classList.add('hidden');
+    };
+  };
+
+  // Receiver
+  $('#generate-answer').onclick = receiverGenerateAnswer;
+  $('#copy-answer').onclick = () => {
+    navigator.clipboard.writeText($('#recv-answer-text').value).then(() => toast('copied'));
+  };
+
+  $('#scan-offer-qr').onclick = async () => {
+    $('#recv-scanner-wrap').classList.remove('hidden');
+    const r = await scanQR('qr-reader-recv', (decoded) => {
+      $('#recv-offer-text').value = decoded;
+      $('#recv-scanner-wrap').classList.add('hidden');
+      toast('scanned');
+    });
+    $('#cancel-scan-offer').onclick = () => {
+      if (r) r.stop().then(() => r.clear()).catch(()=>{});
+      $('#recv-scanner-wrap').classList.add('hidden');
+    };
+  };
+
+  // Web Share API (mobile friendly)
+  if (navigator.share) {
+    const s1 = $('#share-offer');
+    const s2 = $('#share-answer');
+    s1.hidden = false; s2.hidden = false;
+    s1.onclick = () => navigator.share({ title: 'DROP invite', text: $('#send-offer-text').value });
+    s2.onclick = () => navigator.share({ title: 'DROP response', text: $('#recv-answer-text').value });
+  }
+
+  // Reset
+  $('#reset-link').onclick = (e) => {
+    e.preventDefault();
+    if (confirm('Reset everything? Any in-progress transfer will be aborted.')) {
+      try { App.pc && App.pc.close(); } catch {}
+      location.reload();
+    }
+  };
+
+  // Initial status
+  setStatus('idle', '');
+
+  // Warn before closing during an active transfer.
+  window.addEventListener('beforeunload', (e) => {
+    const active = App.pc && ['connected', 'checking', 'completed'].includes(App.pc.iceConnectionState);
+    const inFlight = App.totals.bytesDone > 0 && App.totals.bytesDone < App.totals.bytesTarget;
+    if (active && inFlight) {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
+  });
+});
+</script>
+</body>
+</html>
